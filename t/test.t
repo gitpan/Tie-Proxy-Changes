@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests=>12;
+use Test::More tests=>17;
 eval {
 	require Test::NoWarnings;
 	Test::NoWarnings->import();
@@ -54,3 +54,15 @@ is_deeply($newvalue,{XXX=>{YYY=>[undef,"ZZZ"]}},"autovivify");
 my $multilevel=Tie::Proxy::Changes->new($x,"secret",{XXX=>{YYY=>[undef,"ZZZ"]}});
 $multilevel->{XXX}->{YYY}->[0]="WWW";
 is_deeply($newvalue,{XXX=>{YYY=>["WWW","ZZZ"]}},"multilevel");
+
+my $var="";
+
+my $scalar=Tie::Proxy::Changes->new($x,"secret",{foo=>\$var});
+${$scalar->{foo}}="BAR";
+is($var,"BAR","scalar");
+
+my $hash={R=>"T"};
+my $scalarmulti=Tie::Proxy::Changes->new($x,"secret",{foo=>\$hash});
+${$scalarmulti->{foo}}->{R}="V";
+is_deeply($newvalue,{foo=>\{R=>"V"}},"scalar multilevel");
+is_deeply($hash,{R=>"V"},"scalar multilevel changed the reference");

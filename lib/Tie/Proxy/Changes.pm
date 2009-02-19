@@ -1,4 +1,4 @@
-###############################################################################
+#############################################################################
 #Changes.pm
 #Last Change: 2009-02-18
 #Copyright (c) 2008 Marc-Seabstian "Maluku" Lucksch
@@ -9,114 +9,187 @@
 #license.txt file that should be enclosed with plasma distributions. A copy of 
 #the license is (at the time of this writing) also available at
 #http://www.opensource.org/licenses/mit-license.php .
-###############################################################################
+#############################################################################
 
 package Tie::Proxy::Changes;
 use strict;
 use warnings;
-use Carp;
+use Carp qw/croak/;
+require Scalar::Util;
 use overload 
-             '""'=> \&getbool, 
-             'bool'=>\&getbool, 
-             '%{}'=>\&gethash,
-             '@{}'=>\&getarray,
-             'nomethod'=>\&getbool;
+             '""'=> \&_getbool, 
+             'bool'=>\&_getbool, 
+             '%{}'=>\&_gethash,
+             '@{}'=>\&_getarray,
+             '${}'=>\&_getscalar,
+             'nomethod'=>\&_getbool;
 
-our $VERSION = 0.1;
+our $VERSION = 0.2;
 
-#Define some object constants for better readability
 
-my $CALLER=0;
-my $INDEX=1;
-my $DATA=2;
-my $TIED_HASH=3;
-my $TIED_ARRAY=4;
+#For thread safety
+
+my %REGISTRY;
+
+# Define the data store fields
+# We have to make this an inside-out-object so it can be used by deref in any
+# call, without killing overload.
+
+my %caller_of;
+my %index_of;
+my %data_of;
+my %tiearray_of;
+my %tiehash_of;
+my %tiescalar_of;
+
+# Helper method for inside-out objecst:
+
+sub _id {
+    return Scalar::Util::refaddr($_[0]);
+}
 
 # Create a new Tie::Proxy::Changes with optional data.
 sub new {
 	my $class=shift;
-    my $calling_obj=shift;
-    my $index=shift;
-	my $self=[$calling_obj,$index]; 
+    my $self=bless \do{ my $anon; },$class;
+    
+    # Safe it into the registry for thread stuff:
+    
+    my $id=_id($self);
+    Scalar::Util::weaken($REGISTRY{$id}=$self);
+    
+    $caller_of{$id}=shift;
 
+    my $index=shift;
+    $index_of{$id}=$index if defined $index;
+    #my $self=[$calling_obj,$index]; 
+    
     # Get the current state of the value, if it is there.
     my $data=shift;
-    $self->[$DATA]=$data if $data;
+    $data_of{$id}=$data if $data;
 
-    # This is needed to be a reference, otherwise it would trigger overload
-    # again and again (which is not good)
-	bless \$self,$class;
+	return $self;
 }
 
 # Access this object as a hashref.
-sub gethash {
-	my $ref=shift;
-	my $self=$$ref;
+sub _gethash {
+	my $self=shift;
+	my $id=_id($self);
 
     # Return the stored access if it is already there.
-	return $self->[$TIED_HASH] if $self->[$TIED_HASH];
+	return $tiehash_of{$id} if $tiehash_of{$id};
 
     # Check the existing data or create it (if not there)
-    croak "Can't use an array as a hash" 
-        if $self->[$DATA] and ref $self->[$DATA] ne "HASH";
-	$self->[$DATA]={} unless $self->[$DATA];
+    croak "Can't use an ".ref $data_of{$id}." as a hash" 
+        if exists $data_of{$id} 
+            and Scalar::Util::reftype($data_of{$id}) ne "HASH";
+	$data_of{$id}={} unless $data_of{$id};
     
     # Tie myself as a hash.
     my %h=();
-	tie %h,ref $ref,$ref;
+	tie %h,ref $self,$self;
 	my $x=\%h;
 
     # Store the tied object for faster access.
-	$self->[$TIED_HASH]=$x;
+	$tiehash_of{$id}=$x;
 
 	return $x;
 }
 
 # Access this object as an arrayref.
-sub getarray {
-	my $ref=shift;
-	my $self=$$ref;
+sub _getarray {
+	my $self=shift;
+	my $id=_id($self);
 
     # Return the stored access if it is already there.
-	return $self->[$TIED_ARRAY] if $self->[$TIED_ARRAY];
+	return $tiearray_of{$id} if $tiearray_of{$id};
     
     # Check the existing data or create it (if not there)
-    croak "Can't use an array as a hash" 
-        if $self->[$DATA] and ref $self->[$DATA] ne "ARRAY";
-	$self->[$DATA]=[] unless $self->[$DATA];
+    croak "Can't use ".ref $data_of{$id}." as an array" 
+        if exists $data_of{$id} 
+            and Scalar::Util::reftype($data_of{$id}) ne "ARRAY";
+	$data_of{$id}=[] unless $data_of{$id};
 
     # Tie myself as an array.
 	my @a=();
-	tie @a,ref $ref,$ref;
+	tie @a,ref $self,$self;
 	my $x=\@a;
 
     # Store the tied object for faster access.
-	$self->[$TIED_ARRAY]=$x;
+	$tiearray_of{$id}=$x;
+
+	return $x;
+}
+
+# Access this as a scalar ref.
+
+sub _getscalar {
+	my $self=shift;
+	my $id=_id($self);
+
+    # Return the stored access if it is already there.
+	return $tiescalar_of{$id} if $tiescalar_of{$id};
+    
+    # Check the existing data or create it (if not there)
+    croak "Can't use ".ref $data_of{$id}." as a scalarref" 
+        if exists $data_of{$id} 
+            and Scalar::Util::reftype($data_of{$id}) ne "REF"
+            and Scalar::Util::reftype($data_of{$id}) ne "SCALAR"
+        ;
+	$data_of{$id}=\do {my $d;} unless exists $data_of{$id};
+
+    # Tie myself as an array.
+	my $s;
+	tie $s,ref $self,$self;
+	my $x=\$s;
+
+    # Store the tied object for faster access.
+	$tiescalar_of{$id}=$x;
 
 	return $x;
 }
 
 # Test for the boolean value
-sub getbool {
-    my $ref=shift;
-	my $self=$$ref;
+sub _getbool {
+    my $self=shift;
+	my $id=_id($self);
 
     # Test for data, return the size of array or hash data.
-    if ($self->[$DATA]) {
-        if (ref $self->[$DATA] eq "HASH") {
-            return scalar %{$self->[$DATA]};
+    if ($data_of{$id}) {
+        if (Scalar::Util::reftype($data_of{$id})) {
+            if (Scalar::Util::reftype($data_of{$id}) eq "HASH") {
+                return scalar %{$data_of{$id}};
+            }
+            elsif (Scalar::Util::reftype($data_of{$id}) eq "ARRAY") {
+                return scalar @{$data_of{$id}};
+            }
+            elsif (Scalar::Util::reftype($data_of{$id}) eq "REF") {
+                return ${$data_of{$id}};
+            }
+            elsif (Scalar::Util::reftype($data_of{$id}) eq "SCALAR") {
+                return ${$data_of{$id}};
+            }
         }
-        elsif (ref $self->[$DATA] eq "ARRAY") {
-            return scalar @{$self->[$DATA]};
-        }
-
         # Return other data, if it's not an array or a hash
-        return $self->[$DATA];
+        return $data_of{$id};
     }
 
     # Empty object is always false (Happens during autovivify)
 	return 0;
 }
+
+# Helper to set the right params for STORE
+#
+sub _upper {
+    my $id=shift;
+    die "upper has to be called as a list" unless wantarray;
+    if (exists $index_of{$id}) {
+        return ($index_of{$id},$data_of{$id});
+    }
+    return $data_of{$id};
+}
+
+# To understand this, reading of perltie is required.
 
 sub TIEHASH { 
 	my $class=shift;
@@ -127,30 +200,36 @@ sub TIEARRAY {
 	return shift;
 }
 
+sub TIESCALAR { 
+	my $class=shift;
+	return shift;
+}
 
 sub STORE { 
-	my $ref=shift;
-	my $self=$$ref;
+	my $self=shift;
+	my $id=_id($self);
 	my $key=shift;
 	my $value=shift;
 	
     # Choose the right operating method, since STORE can be called on both
     # arrays and hashes
-    if (ref $self->[$DATA] eq "HASH") {
-		$self->[$DATA]->{$key}=$value;
+    if (Scalar::Util::reftype($data_of{$id}) eq "HASH") {
+		$data_of{$id}->{$key}=$value;
 	}
-	else {
-		$self->[$DATA]->[$key]=$value;
+	elsif (Scalar::Util::reftype($data_of{$id}) eq "ARRAY") {
+		$data_of{$id}->[$key]=$value;
 	}
-
+    else {
+        ${$data_of{$id}}=$key;
+    }
     # Content has changed, call STORE of the emitting object/tie.
-	$self->[$CALLER]->STORE($self->[$INDEX],$self->[$DATA]);
-
+	
+    $caller_of{$id}->STORE(_upper($id));
     return;
 }
 sub FETCH { 
-	my $ref=shift;
-	my $self=$$ref;
+	my $self=shift;
+	my $id=_id($self);
 	my $key=shift;
 
     # Choose the right operationg method, FETCH is also implemented for both
@@ -158,129 +237,199 @@ sub FETCH {
     # This also creates a new ChangeProxy, so it can track the changes of the
     # data of this object as well. The STORE calls are stacking till they
     # reach the emitting object.
-	if (ref $self->[$DATA] eq "HASH") {
-		return __PACKAGE__->new($ref,$key,$self->[$DATA]->{$key}) if $self->[$DATA]->{$key};
+	if (Scalar::Util::reftype($data_of{$id}) eq "HASH") {
+		return __PACKAGE__->new($self,$key,$data_of{$id}->{$key}) 
+            if $data_of{$id}->{$key};
 	}
-	else {
-		return __PACKAGE__->new($ref,$key,$self->[$DATA]->[$key]) if $self->[$DATA]->[$key];
+	elsif (Scalar::Util::reftype($data_of{$id}) eq "ARRAY") {
+		return __PACKAGE__->new($self,$key,$data_of{$id}->[$key]) 
+            if $data_of{$id}->[$key];
 	}
+    else {
+        return __PACKAGE__->new($self,$key,${$data_of{$id}}) 
+    }
 
     # Also return an empty ChangeProxy on unknown keys or indices, so
     # autovivify calls are tracked as well. The object will play empty/undef
     # in bool context, so it works for both testing and autovivification,
     # since there is no way to distinguish them from the FETCH call. 
-    return __PACKAGE__->new($ref,$key); 
+    return __PACKAGE__->new($self,$key); 
 }
 
 # This implements the rest of the tie interface, nothing new here, they just
 # call STORE on every change to proxy them as well.
 
 sub FIRSTKEY { 
-	my $ref=shift;
-	my $self=$$ref;
-	my $a = scalar keys %{$self->[$DATA]}; each %{$self->[$DATA]} 
+	my $self=shift;
+	my $id=_id($self);
+	my $a = scalar keys %{$data_of{$id}}; each %{$data_of{$id}} 
 }
 sub NEXTKEY  { 
-	my $ref=shift;
-	my $self=$$ref;
-	each %{$self->[$DATA]}
+	my $self=shift;
+	my $id=_id($self);
+	each %{$data_of{$id}}
 }
 sub EXISTS   { 
-	my $ref=shift;
-	my $self=$$ref;
+	my $self=shift;
+	my $id=_id($self);
 	my $key=shift;
-	if (ref $self->[$DATA] eq "HASH") {
-		return exists $self->[$DATA]->{$key};
+	if (Scalar::Util::reftype($data_of{$id}) eq "HASH") {
+		return exists $data_of{$id}->{$key};
 	}
 	else {
-		return exists $self->[$DATA]->{$key};
+		return exists $data_of{$id}->{$key};
 	}
 }
 sub DELETE   { 
-	my $ref=shift;
-	my $self=$$ref;
+	my $self=shift;
+	my $id=_id($self);
 	my $key=shift;
-	if (ref $self->[$DATA] eq "HASH") {
-		delete $self->[$DATA]->{$key};
+	if (Scalar::Util::reftype($data_of{$id}) eq "HASH") {
+		delete $data_of{$id}->{$key};
 	}
 	else {
-		delete $self->[$DATA]->{$key};
+		delete $data_of{$id}->{$key};
 	}
-	$self->[$CALLER]->STORE($self->[$INDEX],$self->[$DATA]);
+	$caller_of{$id}->STORE(_upper($id));
 }
 sub CLEAR    { 
-	my $ref=shift;
-	my $self=$$ref;
-	if (ref $self->[$DATA] eq "HASH") {
-		%{$self->[$DATA]}=();
+	my $self=shift;
+	my $id=_id($self);
+	if (Scalar::Util::reftype($data_of{$id}) eq "HASH") {
+		%{$data_of{$id}}=();
 	}
 	else {
-		@{$self->[$DATA]}=()
+		@{$data_of{$id}}=()
 	}
-	$self->[$CALLER]->STORE($self->[$INDEX],$self->[$DATA]); 
+	$caller_of{$id}->STORE(_upper($id)); 
 }
 sub SCALAR { 
-	my $ref=shift;
-	my $self=$$ref;
-	if (ref $self->[$DATA] eq "HASH") {
-		return scalar %{$self->[$DATA]};
+	my $self=shift;
+	my $id=_id($self);
+	if (Scalar::Util::reftype($data_of{$id}) eq "HASH") {
+		return scalar %{$data_of{$id}};
 	}
 	else {
-		return scalar @{$self->[$DATA]};
+		return scalar @{$data_of{$id}};
 	}
 }
 
 sub FETCHSIZE { 
-	my $ref=shift;
-	my $self=$$ref;
-	scalar @{$self->[$DATA]}; 
+	my $self=shift;
+	my $id=_id($self);
+	scalar @{$data_of{$id}}; 
 }
 sub STORESIZE { 
-	my $ref=shift;
-	my $self=$$ref;
-	$#{$self->[$DATA]} = $_[$CALLER]-1;
-	$self->[$CALLER]->STORE($self->[$INDEX],$self->[$DATA]); 
+	my $self=shift;
+	my $id=_id($self);
+	$#{$data_of{$id}} = $_[0]-1;
+	$caller_of{$id}->STORE(_upper($id)); 
 }
 sub POP       { 
-	my $ref=shift;
-	my $self=$$ref;
-	my $e=pop(@{$self->[$DATA]});
-	$self->[$CALLER]->STORE($self->[$INDEX],$self->[$DATA]); 
+	my $self=shift;
+	my $id=_id($self);
+	my $e=pop(@{$data_of{$id}});
+	$caller_of{$id}->STORE(_upper($id)); 
 	return $e;
 }
 sub PUSH      { 
-	my $ref=shift;
-	my $self=$$ref;
-	push(@{$self->[$DATA]},@_);
-	$self->[$CALLER]->STORE($self->[$INDEX],$self->[$DATA]); 
+	my $self=shift;
+	my $id=_id($self);
+	push(@{$data_of{$id}},@_);
+	$caller_of{$id}->STORE(_upper($id)); 
 	return;
 }
 sub SHIFT     { 
-	my $ref=shift;
-	my $self=$$ref;
-	my $e=shift(@{$self->[$DATA]});
-	$self->[$CALLER]->STORE($self->[$INDEX],$self->[$DATA]); 
+	my $self=shift;
+	my $id=_id($self);
+	my $e=shift(@{$data_of{$id}});
+	$caller_of{$id}->STORE(_upper($id)); 
 	return $e;
 }
 sub UNSHIFT   { 
-	my $ref=shift;
-	my $self=$$ref;
-	unshift(@{$self->[$DATA]},@_);
-	$self->[$CALLER]->STORE($self->[$INDEX],$self->[$DATA]); 
+	my $self=shift;
+	my $id=_id($self);
+	unshift(@{$data_of{$id}},@_);
+	$caller_of{$id}->STORE(_upper($id)); 
 	return; }
 
-sub SPLICE
-{
-	my $ref=shift;
-	my $self=$$ref;
-	my $sz  = scalar @{$self->[$DATA]};
+sub SPLICE {
+	my $self=shift;
+	my $id=_id($self);
+	my $sz  = scalar @{$data_of{$id}};
 	my $off = @_ ? shift : 0;
 	$off   += $sz if $off < 0;
 	my $len = @_ ? shift : $sz-$off;
-	my @rem=splice(@{$self->[$DATA]},$off,$len,@_);
-	$self->[$CALLER]->STORE($self->[$INDEX],$self->[$DATA]); 
+	my @rem=splice(@{$data_of{$id}},$off,$len,@_);
+	$caller_of{$id}->STORE(_upper($id)); 
 	return @rem;
 }
+
+# Idea from http://www.perlmonks.org/?node_id=483162
+# Method to clone on ithreads
+sub CLONE {
+    for my $old_reference ( keys %REGISTRY ) {
+        my $object = $REGISTRY{ $old_reference };
+        my $new_reference = Scalar::Util::refaddr($object);
+
+        $caller_of{$new_reference}=$caller_of{$old_reference};
+        delete $caller_of{$old_reference};
+        $index_of{$new_reference}=$index_of{$old_reference};
+        delete $index_of{$old_reference};
+        $data_of{$new_reference}=$data_of{$old_reference};
+        delete $data_of{$old_reference};
+        $tiearray_of{$new_reference}=$tiearray_of{$old_reference};
+        delete $tiearray_of{$old_reference};
+        $tiehash_of{$new_reference}=$tiehash_of{$old_reference};
+        delete $tiehash_of{$old_reference};
+        $tiescalar_of{$new_reference}=$tiescalar_of{$old_reference};
+        delete $tiescalar_of{$old_reference};
+
+        Scalar::Util::weaken( 
+            $REGISTRY{ $new_reference } = $REGISTRY{ $old_reference } 
+            );
+        delete $REGISTRY{ $old_reference };
+        
+    }
+}
+
+# DESTROY, needed for inside-out objects:
+sub DESTROY {
+    my $self=shift;
+	my $id=_id($self);
+
+    delete $REGISTRY{$id};
+    delete $caller_of{$id};
+    delete $index_of{$id};
+    delete $data_of{$id};
+    delete $tiearray_of{$id};
+    delete $tiehash_of{$id};
+    delete $tiescalar_of{$id};
+}
+
+sub UNTIE {
+    my $self=shift;
+	my $id=_id($self);
+
+    delete $tiearray_of{$id};
+    delete $tiehash_of{$id};
+    delete $tiescalar_of{$id};
+}
+
+#Retrieve the internal stuff, for debug and maybe hacks :)
+sub _data {
+    my $self=shift;
+	my $id=_id($self);
+    return {
+        object=>$caller_of{$id},
+        key=>$index_of{$id},
+        data=>$data_of{$id},
+        tied_array=>$tiearray_of{$id},
+        tied_hash=>$tiehash_of{$id},
+        tied_scalar=>$tiescalar_of{$id},
+    };
+}
+    
 
 1;
 
@@ -314,8 +463,8 @@ In any tied class:
 
 Sometimes a tied object needs to keep track of all changes happening to its
 data. This includes substructures with multi-level data. Returning a
-C<Tie::Proxy::Changes> object instead of the raw data will result in a STORE call
-whenever the data is changed.
+C<Tie::Proxy::Changes> object instead of the raw data will result in a STORE 
+call whenever the data is changed.
 
 Here is a small example to illustrate to problem.
 
@@ -351,8 +500,8 @@ When perl gets an C<undef> from a FETCH call, it calls STORE with an empty
 reference to an array or a hash and then changes that hash. Some tied objects
 however can not keep this reference, because they save it in a different way.
 
-The solution is to have FETCH return an empty C<Tie::Proxy::Changes> object, and
-if the object is changed, STORE of the tied object will be called with the
+The solution is to have FETCH return an empty C<Tie::Proxy::Changes> object, 
+and if the object is changed, STORE of the tied object will be called with the
 given key
 
     my $self=shift;
@@ -371,23 +520,9 @@ called.
 Creates a new C<Tie::Proxy::Changes>, on every change of its content
 C<OBJECT>->STORE(C<KEY>,C<MODIFIED DATA>) is called.
 
+For TIESCALAR objects, KEY has to be set to undef.
+
 =head1 INTERNAL METHODS
-
-These are used to provide the right access for L<overload> and L<tie>. They
-shouldn't be called at any rate.
-
-=head2 getarray
-
-This gets called when C<Tie::Proxy::Changes> plays arrayref by L<overload>.
-
-=head2 gethash
-
-This gets called when C<Tie::Proxy::Changes> plays hash by L<overload>.
-
-=head2 getbool
-
-This gets called when C<Tie::Proxy::Changes> is asked if it is true or false.
-Returns true if this has content and that is true.
 
 =head2 SCALAR
 
@@ -397,9 +532,7 @@ See L<perltie> (Somehow Pod::Coverage annoys me about this method).
 
 =head1 BUGS
 
-This won't work if you structure contains Refernces to SCALAR or other REFs,
-since overload is used, and there is no way to access the contained data if
-C<@{}>, C<%{}> and C<${}> is overloaded. If you find any way, drop me a mail.
+If you find any bugs, please drop me a mail.
 
 =head1 SEE ALSO
 

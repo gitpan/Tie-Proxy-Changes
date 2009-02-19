@@ -7,5 +7,6 @@ WriteMakefile(
 	PREREQ_PM=>{
 		 "Carp"=>0,
          "overload"=>0,
+         "Scalar::Util"=>0,
 	}
 );
